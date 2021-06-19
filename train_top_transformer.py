@@ -54,12 +54,13 @@ from transformers import (
 )
 
 HIDDEN_SIZE = 96
-MAX_LENGTH = 102
+MAX_LENGTH = 50  # NOTE NOT SURE
 
 from bottom_transformer import BottomTransformer
-from middle_data_collator import MiddleDataCollatorForFunctionCloneDetection
 from middle_transformer import MiddleTransformer
 from process_data.utils import CURRENT_DATA_BASE_FOR_MIDDLE
+from top_data_collator import TopDataCollator
+from top_transformer import TopTransformer
 
 logger = logging.getLogger(__name__)
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
@@ -208,13 +209,14 @@ def main():
     # the format in train_files should be
     # {"data" =
     #   [
-    #       {"is_cloned": 0 / 1, "func1": [block1_of_func1, block2_of_func1, ..., blockn_of_func1], "func2":[block1_of_func2, block2_of_func2, ..., blockn_of_func2]},
-    #       {"is_cloned": 0 / 1, "func1": [block1_of_func1, block2_of_func1, ..., blockn_of_func1], "func2":[block1_of_func2, block2_of_func2, ..., blockn_of_func2]},
+    #       {"text": [func1, func2, ..., funcn], "is_malware": 0/1},
+    #       {"text": [func1, func2, ..., funcn], "is_malware": 0/1},
     #       ...
-    #       {"is_cloned": 0 / 1, "func1": [block1_of_func1, block2_of_func1, ..., blockn_of_func1], "func2":[block1_of_func2, block2_of_func2, ..., blockn_of_func2]},
+    #       {"text": [func1, func2, ..., funcn], "is_malware": 0/1},
     #   ]
     # }
-    # each block consists of a number of instruction, which is like [opcode, operand_1, operand_2]
+    # each function consists of a number of blocks
+    # each block consists of a number of instructions, which are like [opcode, operand_1, operand_2]
     train_files = [
         os.path.join(CURRENT_DATA_BASE_FOR_MIDDLE, "func.{}.json".format(i))
         for i in range(103)
@@ -245,36 +247,6 @@ def main():
     )
     tokenizer.post_processor = TemplateProcessing(single="$A",)
 
-    # # NOTE: `max_position_embeddings` here should be consistent with `length` above
-    # # use transformer, so the num_hidden_layers = 1
-    # config = BertConfig(
-    #     vocab_size=tokenizer.get_vocab_size(),
-    #     hidden_size=HIDDEN_SIZE,
-    #     num_hidden_layers=1,
-    #     num_attention_heads=8,
-    #     intermediate_size=HIDDEN_SIZE * 4,
-    #     max_position_embeddings=32,
-    # )
-
-    # bottom_embedding = BottomEmbedding(opcode_size, operand_size, HIDDEN_SIZE // 3)
-    # bottom_embedding = DataParallel(bottom_embedding)
-
-    # # initalize a new BERT for Masked Assemble Model
-    # model = BertModel(config)
-    # model = DataParallel(model)
-
-    # bottom_headlayer = BottomHeadLayer(opcode_size, operand_size, HIDDEN_SIZE // 3)
-    # bottom_headlayer = DataParallel(bottom_headlayer)
-
-    model = MiddleTransformer(
-        d_model=HIDDEN_SIZE,
-        n_head=8,
-        num_layers=6,
-        max_length=MAX_LENGTH,
-        device="cuda:0",
-    )
-    model = DataParallel(model)
-
     bottom_transformer = BottomTransformer(
         tokenizer.get_vocab_size(),
         tokenizer.get_vocab_size(),
@@ -287,7 +259,27 @@ def main():
     )
     bottom_transformer.load_state_dict(torch.load("./bottom_transformer_state_dict"))
     print("The Bottom Transformer model has been loaded successfully !")
-    # bottom_transformer.eval()
+    bottom_transformer.eval()
+
+    middle_transformer = MiddleTransformer(
+        d_model=HIDDEN_SIZE,
+        n_head=8,
+        num_layers=6,
+        max_length=MAX_LENGTH,
+        device="cuda:0",
+    )
+    middle_transformer.load_state_dict(torch.load("./middle_transformer_state_dict"))
+    print("The Middle Transformer model has been loaded successfully !")
+    middle_transformer.eval()
+
+    model = TopTransformer(
+        d_model=HIDDEN_SIZE,
+        n_head=8,
+        num_layers=6,
+        max_length=MAX_LENGTH,
+        device="cuda:0",
+    )
+    model = DataParallel(model)
 
     loss_function = torch.nn.MSELoss()
 
@@ -299,39 +291,31 @@ def main():
 
     def tokenize_function(examples):
         # pdb.set_trace()
-        func1s = examples["func1"]
-        func2s = examples["func2"]
-        labels = examples["is_cloned"]
+        binaries = examples["text"]
+        labels = examples["is_malware"]
 
         encoded_inputs = {}
-        results1 = [
-            [tokenizer.encode_batch(block) for block in func] for func in func1s
-        ]
-        results2 = [
-            [tokenizer.encode_batch(block) for block in func] for func in func2s
+        results = [
+            [[tokenizer.encode_batch(block) for block in func] for func in binary]
+            for binary in binaries
         ]
 
         # NOTE
         # Assumption: every instruction consists of (opcode, operand_1, operand_2)
         # so only need first three ids
-        encoded_inputs["func1_input_ids"] = [
-            [[inst.ids[:3] for inst in block] for block in func] for func in results1
+        encoded_inputs["input_ids"] = [
+            [[[inst.ids[:3] for inst in block] for block in func] for func in binary]
+            for binary in results
         ]
-        encoded_inputs["func1_special_tokens_mask"] = [
-            [[inst.special_tokens_mask[0] for inst in block] for block in func]
-            for func in results1
-        ]
-
-        encoded_inputs["func2_input_ids"] = [
-            [[inst.ids[:3] for inst in block] for block in func] for func in results2
-        ]
-        encoded_inputs["func2_special_tokens_mask"] = [
-            [[inst.special_tokens_mask[0] for inst in block] for block in func]
-            for func in results2
+        encoded_inputs["special_tokens_mask"] = [
+            [
+                [[inst.special_tokens_mask[0] for inst in block] for block in func]
+                for func in binary
+            ]
+            for binary in results
         ]
 
-        # the label should be 1 or -1
-        encoded_inputs["labels"] = [2 * label - 1 for label in labels]
+        encoded_inputs["labels"] = labels
         batch_outputs = BatchEncoding(
             encoded_inputs, tensor_type="np", prepend_batch_axis=False,
         )
@@ -355,9 +339,7 @@ def main():
 
     # Data collator
     # This one will take care of randomly masking the tokens.
-    data_collator = MiddleDataCollatorForFunctionCloneDetection(
-        tokenizer=tokenizer, mlm=False,
-    )  # , mlm_probability=args.mlm_probability)
+    data_collator = TopDataCollator(tokenizer=tokenizer, mlm=False,)
 
     # DataLoaders creation:
     train_dataloader = DataLoader(
@@ -403,6 +385,7 @@ def main():
     # Prepare everything with our `accelerator`.
     (
         bottom_transformer,
+        middle_transformer,
         model,
         optimizer,
         loss_function,
@@ -411,6 +394,7 @@ def main():
         test_dataloader,
     ) = accelerator.prepare(
         bottom_transformer,
+        middle_transformer,
         model,
         optimizer,
         loss_function,
@@ -473,17 +457,18 @@ def main():
     for epoch in range(args.num_train_epochs):
         model.train()
         for step, batch in enumerate(train_dataloader):
-            # input_ids `(batch_size, blocks_max_length, inst_max_length, 3)`
-            func1_input_ids = batch.pop("func1_input_ids", None)
+            # input_ids `(batch_size, functions_max_length, blocks_max_length, inst_max_length, 3)`
+            input_ids = batch.pop("input_ids", None)
             (
                 batch_size,
+                functions_max_length,
                 blocks_max_length,
                 inst_max_length,
                 inst_size,
-            ) = func1_input_ids.shape
+            ) = input_ids.shape
 
-            # masks `(batch_size, blocks_max_length, inst_max_length)`
-            func1_special_tokens_mask = batch.pop("func1_special_tokens_mask", None)
+            # masks `(batch_size, functions_max_length, blocks_max_length, inst_max_length)`
+            special_tokens_mask = batch.pop("special_tokens_mask", None)
 
             func1_input_ids = torch.reshape(
                 func1_input_ids, (-1, inst_max_length, inst_size)
