@@ -4,7 +4,7 @@ from multiprocessing import Pool
 
 from tqdm import tqdm
 
-from utils import CURRENT_DATA_BASE, read_file
+from utils import CURRENT_DATA_BASE_FOR_BOTTOM, read_file
 
 
 def worker(filename):
@@ -25,7 +25,11 @@ def main():
     for i in range(30):
         total_p.apply_async(
             worker,
-            args=(os.path.join(CURRENT_DATA_BASE, "inst_of_block.{}.clean".format(i)),),
+            args=(
+                os.path.join(
+                    CURRENT_DATA_BASE_FOR_BOTTOM, "inst_of_block.{}.clean".format(i)
+                ),
+            ),
         )
 
     print("Waiting for all sub-processes done...")

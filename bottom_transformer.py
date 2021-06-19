@@ -22,7 +22,7 @@ class BottomTransformer(nn.Module):
         d_model=96,
         n_head=8,
         num_layers=6,
-        max_length=50,
+        max_length=251,
         device="cuda:0",
     ):
         super().__init__()
@@ -37,7 +37,7 @@ class BottomTransformer(nn.Module):
             opcode_size, operand_size, d_model, device
         )
 
-    def forward(self, batch, masks):
+    def forward(self, batch, masks, header=False):
         # pdb.set_trace()
         # batch `(batch_size, max_length, inst_size)`
         input_embs = self.bottom_embedding(batch)
@@ -49,4 +49,8 @@ class BottomTransformer(nn.Module):
 
         # re-permute to make the 'batch_size' in the first dimension
         tmp = tmp.permute(1, 0, 2).contiguous()
-        return self.bottom_headlayer(tmp)
+
+        if header:
+            return self.bottom_headlayer(tmp)
+
+        return tmp[:, 0, :]

@@ -3,7 +3,7 @@ from multiprocessing import Pool, Process
 
 from tqdm import tqdm
 
-from utils import ORIGINAL_DATA_BASE, get_one_function_all_blocks
+from utils import ORIGINAL_DATA_BASE_FOR_BOTTOM, get_one_function_all_blocks
 
 BASE = 900
 TARGET = "./inst_of_block"
@@ -57,7 +57,8 @@ def dir_worker(subdirs, index):
 def main():
     dirs = []
     for f in [
-        os.path.join(ORIGINAL_DATA_BASE, "linux32_0{}xxxx".format(i)) for i in range(6)
+        os.path.join(ORIGINAL_DATA_BASE_FOR_BOTTOM, "linux32_0{}xxxx".format(i))
+        for i in range(6)
     ]:
         dirs += [os.path.join(f, sub_dir) for sub_dir in tqdm(os.listdir(f))]
     print("We get {} sub-dirs".format(len(dirs)))

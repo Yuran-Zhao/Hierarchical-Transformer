@@ -3,7 +3,7 @@ from multiprocessing import Pool, Queue
 
 from tqdm import tqdm
 
-from utils import CURRENT_DATA_BASE, read_file
+from utils import CURRENT_DATA_BASE_FOR_BOTTOM, read_file
 
 max_length_q = Queue()
 cnt_q = Queue()
@@ -40,7 +40,12 @@ def main():
     for i in range(59):
         total_p.apply_async(
             worker,
-            args=(os.path.join(CURRENT_DATA_BASE, "inst_of_block.{}".format(i)), i,),
+            args=(
+                os.path.join(
+                    CURRENT_DATA_BASE_FOR_BOTTOM, "inst_of_block.{}".format(i)
+                ),
+                i,
+            ),
         )
 
     print("Waiting for all sub-processes done...")

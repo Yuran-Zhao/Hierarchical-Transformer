@@ -18,7 +18,7 @@ import torch
 from transformers import BatchEncoding
 
 EncodedInput = List[int]
-MAX_LENGTH = 250
+MAX_LENGTH_OF_BLOCK = 251
 
 
 @dataclass
@@ -48,7 +48,7 @@ class BottomDataCollatorForMaskedAssemblyModel:
             batch = self.pad(
                 encoded_inputs=examples,
                 return_tensors="pt",
-                max_length=MAX_LENGTH,
+                max_length=MAX_LENGTH_OF_BLOCK,
                 pad_to_multiple_of=self.pad_to_multiple_of,
             )
         else:
@@ -205,11 +205,6 @@ class BottomDataCollatorForMaskedAssemblyModel:
 
         required_input = encoded_inputs["input_ids"]
 
-        if not required_input:
-            if return_attention_mask:
-                encoded_inputs["attention_mask"] = []
-            return encoded_inputs
-
         # If we have PyTorch/TF/NumPy tensors/arrays as inputs, we cast them as python objects
         # and rebuild them afterwards if no return_tensors is specified
         # Note that we lose the specific device the tensor may be on for PyTorch
@@ -303,9 +298,6 @@ class BottomDataCollatorForMaskedAssemblyModel:
 
         required_input = encoded_inputs["input_ids"]
 
-        # if padding_strategy == "LONGEST":
-        #     max_length = max([len(sent) for sent in required_input])
-
         if (
             max_length is not None
             and pad_to_multiple_of is not None
@@ -348,24 +340,7 @@ class BottomDataCollatorForMaskedAssemblyModel:
                     + [[self.tokenizer.token_to_id("[PAD]") for _ in range(3)]]
                     * difference
                 )
-            # elif self.padding_side == "left":
-            #     if return_attention_mask:
-            #         encoded_inputs["attention_mask"] = [0] * difference + [1] * len(
-            #             required_input
-            #         )
-            #     if "token_type_ids" in encoded_inputs:
-            #         encoded_inputs["token_type_ids"] = [
-            #             self.pad_token_type_id
-            #         ] * difference + encoded_inputs["token_type_ids"]
-            #     if "special_tokens_mask" in encoded_inputs:
-            #         encoded_inputs["special_tokens_mask"] = [
-            #             1
-            #         ] * difference + encoded_inputs["special_tokens_mask"]
-            #     encoded_inputs[self.model_input_names[0]] = [
-            #         self.pad_token_id
-            #     ] * difference + required_input
-            # else:
-            #     raise ValueError("Invalid padding strategy:" + str(self.padding_side))
+
         elif return_attention_mask and "attention_mask" not in encoded_inputs:
             encoded_inputs["attention_mask"] = [1] * len(required_input)
 

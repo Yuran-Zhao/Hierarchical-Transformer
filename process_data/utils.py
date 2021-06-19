@@ -3,12 +3,18 @@ import os
 import pickle
 import sys
 
-from process_data.datatype import Function
+from datatype import Function
 
 sys.path.insert(0, "/home/ming/malware/inst2vec_bert")
 
-ORIGINAL_DATA_BASE = "/home/ming/malware/data/elfasm/"
-CURRENT_DATA_BASE = "/home/ming/malware/inst2vec_bert/H-Transformer/process_data"
+ORIGINAL_DATA_BASE_FOR_BOTTOM = "/home/ming/malware/data/elfasm/"
+CURRENT_DATA_BASE_FOR_BOTTOM = (
+    "/home/ming/malware/inst2vec_bert/H-Transformer/process_data"
+)
+ORIGINAL_DATA_BASE_FOR_MIDDLE = "/home/ming/malware/prog_32bit/coreutils-asm"
+CURRENT_DATA_BASE_FOR_MIDDLE = (
+    "/home/ming/malware/inst2vec_bert/H-Transformer/data/middle"
+)
 
 
 def read_file(filename):

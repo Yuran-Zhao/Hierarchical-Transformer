@@ -54,11 +54,11 @@ from transformers import (
 )
 
 HIDDEN_SIZE = 96
-MAX_LENGTH = 250
+MAX_LENGTH = 251
 
 from bottom_data_collator import BottomDataCollatorForMaskedAssemblyModel
 from bottom_transformer import BottomTransformer
-from process_data.utils import CURRENT_DATA_BASE
+from process_data.utils import CURRENT_DATA_BASE_FOR_BOTTOM
 
 logger = logging.getLogger(__name__)
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
@@ -215,10 +215,12 @@ def main():
     # }
     # each inst is like [opcode, operand_1, operand_2]
     train_files = [
-        os.path.join(CURRENT_DATA_BASE, "inst_of_block.{}.clean.json".format(i))
+        os.path.join(
+            CURRENT_DATA_BASE_FOR_BOTTOM, "inst_of_block.{}.clean.json".format(i)
+        )
         for i in range(29)
     ]
-    valid_file = os.path.join(CURRENT_DATA_BASE, "inst_of_block.test.json")
+    valid_file = os.path.join(CURRENT_DATA_BASE_FOR_BOTTOM, "inst_of_block.test.json")
 
     raw_datasets = load_dataset(
         "json",
@@ -333,7 +335,7 @@ def main():
         train_dataset,
         shuffle=True,
         collate_fn=data_collator,
-        batch_size=8,  # args.per_device_train_batch_size,
+        batch_size=args.per_device_train_batch_size,
     )
     eval_dataloader = DataLoader(
         eval_dataset,
@@ -430,9 +432,13 @@ def main():
         model.train()
         for step, batch in enumerate(train_dataloader):
             # pdb.set_trace()
+            # input_ids `(batch_size, max_length, 3)`
             input_ids = batch.pop("input_ids", None)
+            # masks `(batch_size, max_length)`
             masks = batch.pop("special_tokens_mask", None)
-            predictions = model(input_ids, masks).permute(0, 3, 1, 2).contiguous()
+            predictions = (
+                model(input_ids, masks, header=True).permute(0, 3, 1, 2).contiguous()
+            )
 
             labels = batch.pop("labels", None)
             # labels = labels.unsqueeze(dim=-1).permute(0, 3, 1, 2).contiguous()
@@ -461,7 +467,9 @@ def main():
                         input_ids = batch.pop("input_ids", None)
                         masks = batch.pop("special_tokens_mask", None)
                         predictions = (
-                            model(input_ids, masks).permute(0, 3, 1, 2).contiguous()
+                            model(input_ids, masks, header=True)
+                            .permute(0, 3, 1, 2)
+                            .contiguous()
                         )
                         labels = batch.pop("labels", None)
                         loss = loss_function(predictions, labels)
@@ -484,7 +492,18 @@ def main():
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(args.output_dir, save_function=accelerator.save)
+        torch.save(
+            unwrapped_model.state_dict(),
+            os.path.join(args.output_dir, "bottom_transformer_state_dict"),
+        )
+        print(
+            "The Bottom Transformer has been save to {}".format(
+                os.path.join(args.output_dir, "bottom_transformer_state_dict")
+            )
+        )
+
+        # pdb.set_trace()
+        # unwrapped_model.save_pretrained(args.output_dir, save_function=accelerator.save)
 
 
 if __name__ == "__main__":

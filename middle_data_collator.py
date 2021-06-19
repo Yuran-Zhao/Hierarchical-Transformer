@@ -17,7 +17,10 @@ import tokenizers
 import torch
 from transformers import BatchEncoding
 
+from bottom_data_collator import MAX_LENGTH_OF_BLOCK
+
 EncodedInput = List[int]
+MAX_LENGTH_OF_FUNCTION = 50
 
 
 @dataclass
@@ -40,93 +43,26 @@ class MiddleDataCollatorForFunctionCloneDetection:
         self, examples: List[Union[List[int], torch.Tensor, Dict[str, torch.Tensor]]],
     ) -> Dict[str, torch.Tensor]:
 
-        print(examples)
+        # print(examples)
         # Handle dict or lists with proper padding and conversion to tensor.
         if isinstance(examples[0], (dict, BatchEncoding)):
             # will go this way
             batch = self.pad(
                 encoded_inputs=examples,
                 return_tensors="pt",
-                max_length=32,
+                max_length=MAX_LENGTH_OF_FUNCTION,
                 pad_to_multiple_of=self.pad_to_multiple_of,
             )
-        else:
-            batch = {
-                "input_ids": _collate_batch(
-                    examples, self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of
-                )
-            }
 
         # If special token mask has been preprocessed, pop it from the dict.
-        special_tokens_mask = batch.pop("special_tokens_mask", None)
-        if self.mlm:
-            batch["input_ids"], batch["labels"] = self.mask_tokens(
-                batch["input_ids"], special_tokens_mask=special_tokens_mask
-            )
-        else:
-            batch["input_ids"] = torch.squeeze(batch["input_ids"], dim=0)
-            batch["token_type_ids"] = torch.squeeze(batch["token_type_ids"], dim=0)
+        # func1_special_tokens_mask = batch.pop("func1_special_tokens_mask", None)
+        # func2_special_tokens_mask = batch.pop("func2_special_tokens_mask", None)
+
+        # pdb.set_trace()
+        # batch["input_ids"] = torch.squeeze(batch["input_ids"], dim=0)
+        # batch["token_type_ids"] = torch.squeeze(batch["token_type_ids"], dim=0)
+        # pdb.set_trace()
         return batch
-
-    def mask_tokens(
-        self, inputs: torch.Tensor, special_tokens_mask: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
-        """
-        pdb.set_trace()
-        labels = inputs.clone()
-        # We sample a few tokens in each sequence for MLM training (with probability `self.mlm_probability`)
-        probability_matrix = torch.full(labels.size(), self.mlm_probability)
-        if special_tokens_mask is None:
-            special_tokens_mask = [
-                self.tokenizer.get_special_tokens_mask(
-                    val, already_has_special_tokens=True
-                )
-                for val in labels.tolist()
-            ]
-            special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool)
-        else:
-            special_tokens_mask = special_tokens_mask.bool()
-
-        probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
-        masked_indices = torch.bernoulli(probability_matrix).bool()
-        labels[~masked_indices] = -100  # We only compute loss on masked tokens
-
-        # everytime we replace masked input tokens
-        # with ([MASK], EMPTY, EMPTY)
-        indices_replaced = (
-            torch.bernoulli(torch.full(labels.shape[:2], 1.0)).bool() & masked_indices
-        )
-        # inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(
-        #     self.tokenizer.mask_token
-        # )
-        # inputs[indices_replaced] = self.tokenizer.token_to_id("[MASK]")
-        inputs[indices_replaced] = torch.from_numpy(
-            np.array(
-                [
-                    self.tokenizer.token_to_id("[MASK]"),
-                    self.tokenizer.token_to_id(
-                        "EMPTY"
-                    ),  # TODO: update the datasets, DOESN"T contain 'EMPTY' in tokenizer right now
-                    self.tokenizer.token_to_id("EMPTY"),
-                ]
-            )
-        )
-
-        # # 10% of the time, we replace masked input tokens with random word
-        # indices_random = (
-        #     torch.bernoulli(torch.full(labels.shape, 0.5)).bool()
-        #     & masked_indices
-        #     & ~indices_replaced
-        # )
-        # random_words = torch.randint(
-        #     self.tokenizer.get_vocab_size(), labels.shape, dtype=torch.long
-        # )
-        # inputs[indices_random] = random_words[indices_random]
-
-        # The rest of the time (10% of the time) we keep the masked input tokens unchanged
-        return inputs, labels
 
     def pad(
         self,
@@ -198,12 +134,7 @@ class MiddleDataCollatorForFunctionCloneDetection:
                 for key in encoded_inputs[0].keys()
             }
 
-        required_input = encoded_inputs["input_ids"]
-
-        if not required_input:
-            if return_attention_mask:
-                encoded_inputs["attention_mask"] = []
-            return encoded_inputs
+        required_input = encoded_inputs["func1_input_ids"]
 
         # If we have PyTorch/TF/NumPy tensors/arrays as inputs, we cast them as python objects
         # and rebuild them afterwards if no return_tensors is specified
@@ -232,7 +163,7 @@ class MiddleDataCollatorForFunctionCloneDetection:
             for key, value in encoded_inputs.items():
                 encoded_inputs[key] = to_py_obj(value)
 
-        required_input = encoded_inputs["input_ids"]
+        required_input = encoded_inputs["func1_input_ids"]
         # if required_input and not isinstance(required_input[0], (list, tuple)):
         #     encoded_inputs = self._pad(
         #         encoded_inputs,
@@ -296,10 +227,11 @@ class MiddleDataCollatorForFunctionCloneDetection:
             return_attention_mask = False
             # return_attention_mask = "attention_mask" in self.model_input_names
 
-        required_input = encoded_inputs["input_ids"]
+        func1_required_input = encoded_inputs["func1_input_ids"]
+        func1_special_tokens_mask = encoded_inputs["func1_special_tokens_mask"]
 
-        # if padding_strategy == "LONGEST":
-        #     max_length = max([len(sent) for sent in required_input])
+        func2_required_input = encoded_inputs["func2_input_ids"]
+        func2_special_tokens_mask = encoded_inputs["func2_special_tokens_mask"]
 
         if (
             max_length is not None
@@ -308,63 +240,113 @@ class MiddleDataCollatorForFunctionCloneDetection:
         ):
             max_length = ((max_length // pad_to_multiple_of) + 1) * pad_to_multiple_of
 
-        needs_to_be_padded = padding_strategy != "DO_NOT_PAD" and any(
-            len(sent) < max_length for sent in required_input
+        needs_to_be_padded = (
+            padding_strategy != "DO_NOT_PAD"
+            and any(len(func) < max_length for func in func1_required_input)
+            # and any(len(func) < max_length for func in func2_required_input)
         )
-
         if needs_to_be_padded:
-            for index in range(len(required_input)):
+            (
+                encoded_inputs["func1_input_ids"],
+                encoded_inputs["func1_special_tokens_mask"],
+            ) = self.pad_for_functions(
+                func1_required_input, func1_special_tokens_mask, max_length
+            )
+        encoded_inputs["func1_masks"] = [
+            [1 if 0 in block else 0 for block in func]
+            for func in encoded_inputs["func1_special_tokens_mask"]
+        ]
+
+        needs_to_be_padded = (
+            padding_strategy != "DO_NOT_PAD"
+            # and any(len(func) < max_length for func in func1_required_input)
+            and any(len(func) < max_length for func in func2_required_input)
+        )
+        if needs_to_be_padded:
+            (
+                encoded_inputs["func2_input_ids"],
+                encoded_inputs["func2_special_tokens_mask"],
+            ) = self.pad_for_functions(
+                func2_required_input, func2_special_tokens_mask, max_length
+            )
+        encoded_inputs["func2_masks"] = [
+            [1 if 0 in block else 0 for block in func]
+            for func in encoded_inputs["func2_special_tokens_mask"]
+        ]
+
+        # elif return_attention_mask and "attention_mask" not in encoded_inputs:
+        #     encoded_inputs["attention_mask"] = [1] * len(required_input)
+
+        return encoded_inputs
+
+    def pad_for_functions(
+        self,
+        functions_input_ids,
+        functions_special_tokens_mask,
+        max_length,
+        padding_strategy: str = "LONGEST",
+    ):
+        for index in range(len(functions_input_ids)):
+
+            difference = max(max_length - len(functions_input_ids[index]), 0)
+            # if self.padding_side == "right":
+
+            functions_special_tokens_mask[index] = functions_special_tokens_mask[
+                index
+            ] + [[] for _ in range(difference)]
+
+            functions_input_ids[index] = functions_input_ids[index] + [
+                [] for _ in range(difference)
+            ]
+
+            # for sub_index in range(max_length):
+            #     input_ids[index][sub_index] = self.pad_blocks_helper(
+            #         input_ids[index][sub_index], max_length,
+            #     )
+            (
+                functions_input_ids[index],
+                functions_special_tokens_mask[index],
+            ) = self.pad_for_blocks(
+                functions_input_ids[index],
+                functions_special_tokens_mask[index],
+                MAX_LENGTH_OF_BLOCK,
+            )
+        # pdb.set_trace()
+
+        return functions_input_ids, functions_special_tokens_mask
+
+    def pad_for_blocks(
+        self,
+        blocks_input_ids,
+        blocks_special_tokens_mask,
+        max_length,
+        padding_strategy: str = "LONGEST",
+    ):
+        # pdb.set_trace()
+        needs_to_be_padded = padding_strategy != "DO_NOT_PAD" and any(
+            len(block) < max_length for block in blocks_input_ids
+        )
+        if needs_to_be_padded:
+            for index in range(len(blocks_input_ids)):
                 # NOTE: we need to add a '[CLS]' before the `required_input`
                 # so the difference should subtract 1
-                difference = max(max_length - len(required_input[index]) - 1, 0)
+                difference = max(max_length - len(blocks_input_ids[index]) - 1, 0)
                 # if self.padding_side == "right":
 
-                # the necessary modification for adding '[CLS]' before the `required_input`
-                if return_attention_mask:
-                    encoded_inputs["attention_mask"][index] = (
-                        [0] + [1] * len(required_input[index]) + [0] * difference
-                    )
-                if "token_type_ids" in encoded_inputs:
-                    encoded_inputs["token_type_ids"][index] = (
-                        [0]
-                        + encoded_inputs["token_type_ids"][index]
-                        + [self.tokenizer.token_to_id("[PAD]")] * difference
-                    )
-                if "special_tokens_mask" in encoded_inputs:
-                    encoded_inputs["special_tokens_mask"][index] = (
-                        [1]
-                        + encoded_inputs["special_tokens_mask"][index]
-                        + [1] * difference
-                    )
-                # we add
-                encoded_inputs["input_ids"][index] = (
+                blocks_special_tokens_mask[index] = (
+                    [1] + blocks_special_tokens_mask[index] + [1] * difference
+                )
+
+                # process each block
+                blocks_input_ids[index] = (
                     [[self.tokenizer.token_to_id("[CLS]") for _ in range(3)]]
-                    + required_input[index]
+                    + blocks_input_ids[index]
                     + [[self.tokenizer.token_to_id("[PAD]") for _ in range(3)]]
                     * difference
                 )
-            # elif self.padding_side == "left":
-            #     if return_attention_mask:
-            #         encoded_inputs["attention_mask"] = [0] * difference + [1] * len(
-            #             required_input
-            #         )
-            #     if "token_type_ids" in encoded_inputs:
-            #         encoded_inputs["token_type_ids"] = [
-            #             self.pad_token_type_id
-            #         ] * difference + encoded_inputs["token_type_ids"]
-            #     if "special_tokens_mask" in encoded_inputs:
-            #         encoded_inputs["special_tokens_mask"] = [
-            #             1
-            #         ] * difference + encoded_inputs["special_tokens_mask"]
-            #     encoded_inputs[self.model_input_names[0]] = [
-            #         self.pad_token_id
-            #     ] * difference + required_input
-            # else:
-            #     raise ValueError("Invalid padding strategy:" + str(self.padding_side))
-        elif return_attention_mask and "attention_mask" not in encoded_inputs:
-            encoded_inputs["attention_mask"] = [1] * len(required_input)
+        return blocks_input_ids, blocks_special_tokens_mask
 
-        return encoded_inputs
+    # def pad_special_tokens_mask_for_blocks(self, special_tokens_mask, max_length):
 
 
 def _collate_batch(examples, tokenizer, pad_to_multiple_of: Optional[int] = None):
