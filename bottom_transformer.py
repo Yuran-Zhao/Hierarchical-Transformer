@@ -38,18 +38,18 @@ class BottomTransformer(nn.Module):
         )
 
     def forward(self, batch, masks, header=False):
-        # pdb.set_trace()
         # batch `(batch_size, max_length, inst_size)`
         input_embs = self.bottom_embedding(batch)
 
         # in the input to the transformer 'batch_size' should be in the second dimension
         input_embs = input_embs.permute(1, 0, 2).contiguous()
 
-        tmp = self.transformer(input_embs, src_key_padding_mask=masks.bool())
+        tmp = self.transformer(input_embs, None)  # src_key_padding_mask=masks.bool())
 
         # re-permute to make the 'batch_size' in the first dimension
         tmp = tmp.permute(1, 0, 2).contiguous()
 
+        # pdb.set_trace()
         if header:
             return self.bottom_headlayer(tmp)
 

@@ -14,5 +14,6 @@ class MiddleHeadLayer(nn.Module):
         inner = torch.tanh(self.linear1(batch))
         wx = torch.tanh(self.linear2(inner))
 
-        return torch.sigmoid(torch.diag(torch.mm(wx, x), diagonal=0))
-
+        # output `(batch_size,)`
+        output = torch.sigmoid(torch.diag(torch.mm(wx, x), diagonal=0))
+        return output

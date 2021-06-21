@@ -34,6 +34,7 @@ from accelerate import Accelerator
 from datasets import load_dataset
 from tokenizers.processors import TemplateProcessing
 from torch.nn import DataParallel
+from torch.nn.functional import cosine_similarity
 from torch.utils.data.dataloader import DataLoader
 from tqdm.auto import tqdm
 from transformers import (
@@ -265,16 +266,6 @@ def main():
 
     # bottom_headlayer = BottomHeadLayer(opcode_size, operand_size, HIDDEN_SIZE // 3)
     # bottom_headlayer = DataParallel(bottom_headlayer)
-
-    model = MiddleTransformer(
-        d_model=HIDDEN_SIZE,
-        n_head=8,
-        num_layers=6,
-        max_length=MAX_LENGTH,
-        device="cuda:0",
-    )
-    model = DataParallel(model)
-
     bottom_transformer = BottomTransformer(
         tokenizer.get_vocab_size(),
         tokenizer.get_vocab_size(),
@@ -287,7 +278,17 @@ def main():
     )
     bottom_transformer.load_state_dict(torch.load("./bottom_transformer_state_dict"))
     print("The Bottom Transformer model has been loaded successfully !")
-    # bottom_transformer.eval()
+    bottom_transformer.eval()
+
+    model = MiddleTransformer(
+        bottom_transformer,
+        d_model=HIDDEN_SIZE,
+        n_head=8,
+        num_layers=6,
+        max_length=MAX_LENGTH,
+        device="cuda:0",
+    )
+    model = DataParallel(model)
 
     loss_function = torch.nn.MSELoss()
 
@@ -317,7 +318,7 @@ def main():
         encoded_inputs["func1_input_ids"] = [
             [[inst.ids[:3] for inst in block] for block in func] for func in results1
         ]
-        encoded_inputs["func1_special_tokens_mask"] = [
+        encoded_inputs["func1_mask_for_bottom"] = [
             [[inst.special_tokens_mask[0] for inst in block] for block in func]
             for func in results1
         ]
@@ -325,7 +326,7 @@ def main():
         encoded_inputs["func2_input_ids"] = [
             [[inst.ids[:3] for inst in block] for block in func] for func in results2
         ]
-        encoded_inputs["func2_special_tokens_mask"] = [
+        encoded_inputs["func2_mask_for_bottom"] = [
             [[inst.special_tokens_mask[0] for inst in block] for block in func]
             for func in results2
         ]
@@ -402,7 +403,6 @@ def main():
 
     # Prepare everything with our `accelerator`.
     (
-        bottom_transformer,
         model,
         optimizer,
         loss_function,
@@ -410,7 +410,6 @@ def main():
         eval_dataloader,
         test_dataloader,
     ) = accelerator.prepare(
-        bottom_transformer,
         model,
         optimizer,
         loss_function,
@@ -473,74 +472,38 @@ def main():
     for epoch in range(args.num_train_epochs):
         model.train()
         for step, batch in enumerate(train_dataloader):
-            # input_ids `(batch_size, blocks_max_length, inst_max_length, 3)`
+            # input_ids `(batch_size, function_max_size, block_max_size, 3)`
             func1_input_ids = batch.pop("func1_input_ids", None)
-            (
-                batch_size,
-                blocks_max_length,
-                inst_max_length,
-                inst_size,
-            ) = func1_input_ids.shape
 
-            # masks `(batch_size, blocks_max_length, inst_max_length)`
-            func1_special_tokens_mask = batch.pop("func1_special_tokens_mask", None)
+            # masks `(batch_size, function_max_size, block_max_size)`
+            func1_mask_for_bottom = batch.pop("func1_mask_for_bottom", None)
 
-            func1_input_ids = torch.reshape(
-                func1_input_ids, (-1, inst_max_length, inst_size)
-            ).contiguous()
-            func1_special_tokens_mask = torch.reshape(
-                func1_special_tokens_mask, (-1, inst_max_length)
-            ).contiguous()
+            func1_mask_for_function = batch.pop("func1_mask_for_function", None)
 
-            pdb.set_trace()
-            # bottom_output `(new_batch_size, d_model)`
-            func1_bottom_output = bottom_transformer(
-                func1_input_ids, func1_special_tokens_mask
-            )
-            func1_embs = func1_bottom_output.reshape(
-                batch_size, blocks_max_length, -1
-            ).contiguous()
-            func1_masks = batch.pop("func1_masks", None)
             # func1_representations `(batch_size, d_model)`
-            func1_representations = model(func1_embs, func1_masks)
+            func1_representations = model(
+                func1_input_ids, func1_mask_for_bottom, func1_mask_for_function
+            )
 
             func2_input_ids = batch.pop("func2_input_ids", None)
-            (
-                batch_size,
-                blocks_max_length,
-                inst_max_length,
-                inst_size,
-            ) = func2_input_ids.shape
-            # masks `(batch_size, blocks_max_length, inst_max_length)`
-            func2_special_tokens_mask = batch.pop("func2_special_tokens_mask", None)
-            func2_input_ids = torch.reshape(
-                func2_input_ids, (-1, inst_max_length, inst_size)
-            ).contiguous()
-            func2_special_tokens_mask = torch.reshape(
-                func2_special_tokens_mask, (-1, inst_max_length)
-            ).contiguous()
-            # bottom_output `(new_batch_size, d_model)`
-            func2_bottom_output = bottom_transformer(
-                func2_input_ids, func2_special_tokens_mask
-            )
-            # func2_embs `(batch_size, blocks_max_length, d_model)`
-            func2_embs = func2_bottom_output.reshape(
-                batch_size, blocks_max_length, -1
-            ).contiguous()
-            func2_masks = batch.pop("func2_masks", None)
-            # func2_representations `(batch_size, d_model)`
-            func2_representations = model(func2_embs, func2_masks)
 
-            similarity = torch.diag(
-                torch.mm(
-                    func1_representations,
-                    func2_representations.permute(1, 0).contiguous(),
-                ),
-                diagonal=0,
+            # masks `(batch_size, function_max_size, block_max_size)`
+            func2_mask_for_bottom = batch.pop("func2_mask_for_bottom", None)
+
+            func2_mask_for_function = batch.pop("func2_mask_for_function", None)
+
+            # func1_representations `(batch_size, d_model)`
+            func2_representations = model(
+                func2_input_ids, func2_mask_for_bottom, func2_mask_for_function
             )
 
-            labels = batch.pop("labels", None)
+            similarity = cosine_similarity(
+                func1_representations, func2_representations,
+            )
 
+            labels = batch.pop("labels", None).float()
+
+            # pdb.set_trace()
             loss = loss_function(similarity, labels)
 
             loss = loss.sum()
@@ -566,79 +529,45 @@ def main():
                 total = 0
                 for step, batch in enumerate(eval_dataloader):
                     with torch.no_grad():
+                        # input_ids `(batch_size, function_max_size, block_max_size, 3)`
                         func1_input_ids = batch.pop("func1_input_ids", None)
-                        (
-                            batch_size,
-                            blocks_max_length,
-                            inst_max_length,
-                            inst_size,
-                        ) = func1_input_ids.shape
 
-                        # masks `(batch_size, blocks_max_length, inst_max_length)`
-                        func1_special_tokens_mask = batch.pop(
-                            "func1_special_tokens_mask", None
+                        # masks `(batch_size, function_max_size, block_max_size)`
+                        func1_mask_for_bottom = batch.pop("func1_mask_for_bottom", None)
+
+                        func1_mask_for_function = batch.pop(
+                            "func1_mask_for_function", None
                         )
 
-                        func1_input_ids = torch.reshape(
-                            func1_input_ids, (-1, inst_max_length, inst_size)
-                        ).contiguous()
-                        func1_special_tokens_mask = torch.reshape(
-                            func1_special_tokens_mask, (-1, inst_max_length)
-                        ).contiguous()
-
-                        # bottom_output `(new_batch_size, d_model)`
-                        func1_bottom_output = bottom_transformer(
-                            func1_input_ids, func1_special_tokens_mask
-                        )
-                        func1_embs = func1_bottom_output.reshape(
-                            batch_size, blocks_max_length, -1
-                        ).contiguous()
-                        func1_masks = batch.pop("func1_masks", None)
                         # func1_representations `(batch_size, d_model)`
-                        func1_representations = model(func1_embs, func1_masks)
+                        func1_representations = model(
+                            func1_input_ids,
+                            func1_mask_for_bottom,
+                            func1_mask_for_function,
+                        )
 
                         func2_input_ids = batch.pop("func2_input_ids", None)
-                        (
-                            batch_size,
-                            blocks_max_length,
-                            inst_max_length,
-                            inst_size,
-                        ) = func2_input_ids.shape
-                        # masks `(batch_size, blocks_max_length, inst_max_length)`
-                        func2_special_tokens_mask = batch.pop(
-                            "func2_special_tokens_mask", None
-                        )
-                        func2_input_ids = torch.reshape(
-                            func2_input_ids, (-1, inst_max_length, inst_size)
-                        ).contiguous()
-                        func2_special_tokens_mask = torch.reshape(
-                            func2_special_tokens_mask, (-1, inst_max_length)
-                        ).contiguous()
-                        # bottom_output `(new_batch_size, d_model)`
-                        func2_bottom_output = bottom_transformer(
-                            func2_input_ids, func2_special_tokens_mask
-                        )
-                        # func2_embs `(batch_size, blocks_max_length, d_model)`
-                        func2_embs = func2_bottom_output.reshape(
-                            batch_size, blocks_max_length, -1
-                        ).contiguous()
-                        func2_masks = batch.pop("func2_masks", None)
-                        # func2_representations `(batch_size, d_model)`
-                        func2_representations = model(func2_embs, func2_masks)
 
+                        # masks `(batch_size, function_max_size, block_max_size)`
+                        func2_mask_for_bottom = batch.pop("func2_mask_for_bottom", None)
+
+                        func2_mask_for_function = batch.pop(
+                            "func2_mask_for_function", None
+                        )
+
+                        # func1_representations `(batch_size, d_model)`
+                        func2_representations = model(
+                            func2_input_ids,
+                            func2_mask_for_bottom,
+                            func2_mask_for_function,
+                        )
+                        similarity = cosine_similarity(
+                            func1_representations, func2_representations,
+                        )
                         labels = batch.pop("labels", None)
 
-                        loss = loss_function(
-                            func1_representations, func2_representations, labels
-                        )
+                        loss = loss_function(similarity, labels)
 
-                        similarity = torch.diag(
-                            torch.mm(
-                                func1_representations,
-                                func2_representations.permute(1, 0).contiguous(),
-                            ),
-                            diagonal=0,
-                        )
                         masks = similarity.ge(0.0) + 0
 
                         predictions = masks + (torch.ones_like(similarity) - masks) * -1
@@ -666,73 +595,38 @@ def main():
     total, correct = 0, 0
     for step, batch in enumerate(test_dataloader):
         with torch.no_grad():
+            # input_ids `(batch_size, function_max_size, block_max_size, 3)`
             func1_input_ids = batch.pop("func1_input_ids", None)
-            (
-                batch_size,
-                blocks_max_length,
-                inst_max_length,
-                inst_size,
-            ) = func1_input_ids.shape
 
-            # masks `(batch_size, blocks_max_length, inst_max_length)`
-            func1_special_tokens_mask = batch.pop("func1_special_tokens_mask", None)
+            # masks `(batch_size, function_max_size, block_max_size)`
+            func1_mask_for_bottom = batch.pop("func1_mask_for_bottom", None)
 
-            func1_input_ids = torch.reshape(
-                func1_input_ids, (-1, inst_max_length, inst_size)
-            ).contiguous()
-            func1_special_tokens_mask = torch.reshape(
-                func1_special_tokens_mask, (-1, inst_max_length)
-            ).contiguous()
+            func1_mask_for_function = batch.pop("func1_mask_for_function", None)
 
-            # bottom_output `(new_batch_size, d_model)`
-            func1_bottom_output = bottom_transformer(
-                func1_input_ids, func1_special_tokens_mask
-            )
-            func1_embs = func1_bottom_output.reshape(
-                batch_size, blocks_max_length, -1
-            ).contiguous()
-            func1_masks = batch.pop("func1_masks", None)
             # func1_representations `(batch_size, d_model)`
-            func1_representations = model(func1_embs, func1_masks)
+            func1_representations = model(
+                func1_input_ids, func1_mask_for_bottom, func1_mask_for_function
+            )
 
             func2_input_ids = batch.pop("func2_input_ids", None)
-            (
-                batch_size,
-                blocks_max_length,
-                inst_max_length,
-                inst_size,
-            ) = func2_input_ids.shape
-            # masks `(batch_size, blocks_max_length, inst_max_length)`
-            func2_special_tokens_mask = batch.pop("func2_special_tokens_mask", None)
-            func2_input_ids = torch.reshape(
-                func2_input_ids, (-1, inst_max_length, inst_size)
-            ).contiguous()
-            func2_special_tokens_mask = torch.reshape(
-                func2_special_tokens_mask, (-1, inst_max_length)
-            ).contiguous()
-            # bottom_output `(new_batch_size, d_model)`
-            func2_bottom_output = bottom_transformer(
-                func2_input_ids, func2_special_tokens_mask
-            )
-            # func2_embs `(batch_size, blocks_max_length, d_model)`
-            func2_embs = func2_bottom_output.reshape(
-                batch_size, blocks_max_length, -1
-            ).contiguous()
-            func2_masks = batch.pop("func2_masks", None)
-            # func2_representations `(batch_size, d_model)`
-            func2_representations = model(func2_embs, func2_masks)
 
+            # masks `(batch_size, function_max_size, block_max_size)`
+            func2_mask_for_bottom = batch.pop("func2_mask_for_bottom", None)
+
+            func2_mask_for_function = batch.pop("func2_mask_for_function", None)
+
+            # func1_representations `(batch_size, d_model)`
+            func2_representations = model(
+                func2_input_ids, func2_mask_for_bottom, func2_mask_for_function
+            )
+
+            similarity = cosine_similarity(
+                func1_representations, func2_representations,
+            )
             labels = batch.pop("labels", None)
 
-            loss = loss_function(func1_representations, func2_representations, labels)
+            loss = loss_function(similarity, labels)
 
-            similarity = torch.diag(
-                torch.mm(
-                    func1_representations,
-                    func2_representations.permute(1, 0).contiguous(),
-                ),
-                diagonal=0,
-            )
             masks = similarity.ge(0.0) + 0
 
             predictions = masks + (torch.ones_like(similarity) - masks) * -1
@@ -752,7 +646,7 @@ def main():
         perplexity = float("inf")
 
     logger.info(
-        f"steps {completed_steps}: loss: {torch.mean(losses).item()}, accuracy: {correct / total}"
+        f"Final result on test dataset: loss: {torch.mean(losses).item()}, accuracy: {correct / total}"
     )
 
     if args.output_dir is not None:

@@ -1,5 +1,6 @@
 import pdb
 from dataclasses import dataclass
+from itertools import chain
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -55,8 +56,8 @@ class MiddleDataCollatorForFunctionCloneDetection:
             )
 
         # If special token mask has been preprocessed, pop it from the dict.
-        # func1_special_tokens_mask = batch.pop("func1_special_tokens_mask", None)
-        # func2_special_tokens_mask = batch.pop("func2_special_tokens_mask", None)
+        # func1_mask_for_bottom = batch.pop("func1_mask_for_bottom", None)
+        # func2_mask_for_bottom = batch.pop("func2_mask_for_bottom", None)
 
         # pdb.set_trace()
         # batch["input_ids"] = torch.squeeze(batch["input_ids"], dim=0)
@@ -228,50 +229,76 @@ class MiddleDataCollatorForFunctionCloneDetection:
             # return_attention_mask = "attention_mask" in self.model_input_names
 
         func1_required_input = encoded_inputs["func1_input_ids"]
-        func1_special_tokens_mask = encoded_inputs["func1_special_tokens_mask"]
+        func1_mask_for_bottom = encoded_inputs["func1_mask_for_bottom"]
+        func1_max_length = max([len(func) for func in func1_required_input])
+        block1_max_length = (
+            max(
+                chain.from_iterable(
+                    [[len(block) for block in func] for func in func1_required_input]
+                )
+            )
+            + 1
+        )
 
         func2_required_input = encoded_inputs["func2_input_ids"]
-        func2_special_tokens_mask = encoded_inputs["func2_special_tokens_mask"]
-
-        if (
-            max_length is not None
-            and pad_to_multiple_of is not None
-            and (max_length % pad_to_multiple_of != 0)
-        ):
-            max_length = ((max_length // pad_to_multiple_of) + 1) * pad_to_multiple_of
-
-        needs_to_be_padded = (
-            padding_strategy != "DO_NOT_PAD"
-            and any(len(func) < max_length for func in func1_required_input)
-            # and any(len(func) < max_length for func in func2_required_input)
-        )
-        if needs_to_be_padded:
-            (
-                encoded_inputs["func1_input_ids"],
-                encoded_inputs["func1_special_tokens_mask"],
-            ) = self.pad_for_functions(
-                func1_required_input, func1_special_tokens_mask, max_length
+        func2_mask_for_bottom = encoded_inputs["func2_mask_for_bottom"]
+        func2_max_length = max([len(func) for func in func2_required_input])
+        block2_max_length = (
+            max(
+                chain.from_iterable(
+                    [[len(block) for block in func] for func in func2_required_input]
+                )
             )
-        encoded_inputs["func1_masks"] = [
+            + 1
+        )
+
+        func_max_length = max(func1_max_length, func2_max_length)
+        block_max_length = max(block1_max_length, block2_max_length)
+        # if (
+        #     max_length is not None
+        #     and pad_to_multiple_of is not None
+        #     and (max_length % pad_to_multiple_of != 0)
+        # ):
+        #     max_length = ((max_length // pad_to_multiple_of) + 1) * pad_to_multiple_of
+
+        # needs_to_be_padded = (
+        #     padding_strategy != "DO_NOT_PAD"
+        #     and any(len(func) < max_length for func in func1_required_input)
+        #     # and any(len(func) < max_length for func in func2_required_input)
+        # )
+        # if needs_to_be_padded:
+        (
+            encoded_inputs["func1_input_ids"],
+            encoded_inputs["func1_mask_for_bottom"],
+        ) = self.pad_for_functions(
+            func1_required_input,
+            func1_mask_for_bottom,
+            func_max_length,
+            block_max_length,
+        )
+        encoded_inputs["func1_mask_for_function"] = [
             [1 if 0 in block else 0 for block in func]
-            for func in encoded_inputs["func1_special_tokens_mask"]
+            for func in encoded_inputs["func1_mask_for_bottom"]
         ]
 
-        needs_to_be_padded = (
-            padding_strategy != "DO_NOT_PAD"
-            # and any(len(func) < max_length for func in func1_required_input)
-            and any(len(func) < max_length for func in func2_required_input)
+        # needs_to_be_padded = (
+        #     padding_strategy != "DO_NOT_PAD"
+        #     # and any(len(func) < max_length for func in func1_required_input)
+        #     and any(len(func) < max_length for func in func2_required_input)
+        # )
+        # if needs_to_be_padded:
+        (
+            encoded_inputs["func2_input_ids"],
+            encoded_inputs["func2_mask_for_bottom"],
+        ) = self.pad_for_functions(
+            func2_required_input,
+            func2_mask_for_bottom,
+            func_max_length,
+            block_max_length,
         )
-        if needs_to_be_padded:
-            (
-                encoded_inputs["func2_input_ids"],
-                encoded_inputs["func2_special_tokens_mask"],
-            ) = self.pad_for_functions(
-                func2_required_input, func2_special_tokens_mask, max_length
-            )
-        encoded_inputs["func2_masks"] = [
+        encoded_inputs["func2_mask_for_function"] = [
             [1 if 0 in block else 0 for block in func]
-            for func in encoded_inputs["func2_special_tokens_mask"]
+            for func in encoded_inputs["func2_mask_for_bottom"]
         ]
 
         # elif return_attention_mask and "attention_mask" not in encoded_inputs:
@@ -283,12 +310,12 @@ class MiddleDataCollatorForFunctionCloneDetection:
         self,
         functions_input_ids,
         functions_special_tokens_mask,
-        max_length,
-        padding_strategy: str = "LONGEST",
+        func_max_length,
+        block_max_length,
     ):
         for index in range(len(functions_input_ids)):
 
-            difference = max(max_length - len(functions_input_ids[index]), 0)
+            difference = max(func_max_length - len(functions_input_ids[index]), 0)
             # if self.padding_side == "right":
 
             functions_special_tokens_mask[index] = functions_special_tokens_mask[
@@ -309,7 +336,7 @@ class MiddleDataCollatorForFunctionCloneDetection:
             ) = self.pad_for_blocks(
                 functions_input_ids[index],
                 functions_special_tokens_mask[index],
-                MAX_LENGTH_OF_BLOCK,
+                block_max_length,
             )
         # pdb.set_trace()
 
@@ -319,18 +346,18 @@ class MiddleDataCollatorForFunctionCloneDetection:
         self,
         blocks_input_ids,
         blocks_special_tokens_mask,
-        max_length,
+        block_max_length,
         padding_strategy: str = "LONGEST",
     ):
         # pdb.set_trace()
         needs_to_be_padded = padding_strategy != "DO_NOT_PAD" and any(
-            len(block) < max_length for block in blocks_input_ids
+            len(block) < block_max_length for block in blocks_input_ids
         )
         if needs_to_be_padded:
             for index in range(len(blocks_input_ids)):
                 # NOTE: we need to add a '[CLS]' before the `required_input`
                 # so the difference should subtract 1
-                difference = max(max_length - len(blocks_input_ids[index]) - 1, 0)
+                difference = max(block_max_length - len(blocks_input_ids[index]) - 1, 0)
                 # if self.padding_side == "right":
 
                 blocks_special_tokens_mask[index] = (

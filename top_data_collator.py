@@ -24,7 +24,7 @@ MAX_LENGTH_OF_FUNCTION = 50
 
 
 @dataclass
-class TopDataCollatorForFunctionCloneDetection:
+class TopDataCollator:
     tokenizer: tokenizers.Tokenizer
     mlm: bool = True
     mlm_probability: float = 0.15
@@ -55,7 +55,7 @@ class TopDataCollatorForFunctionCloneDetection:
             )
 
         # If special token mask has been preprocessed, pop it from the dict.
-        # func1_special_tokens_mask = batch.pop("func1_special_tokens_mask", None)
+        # mask_for_bottom = batch.pop("mask_for_bottom", None)
         # func2_special_tokens_mask = batch.pop("func2_special_tokens_mask", None)
 
         # pdb.set_trace()
@@ -134,7 +134,7 @@ class TopDataCollatorForFunctionCloneDetection:
                 for key in encoded_inputs[0].keys()
             }
 
-        required_input = encoded_inputs["func1_input_ids"]
+        required_input = encoded_inputs["input_ids"]
 
         # If we have PyTorch/TF/NumPy tensors/arrays as inputs, we cast them as python objects
         # and rebuild them afterwards if no return_tensors is specified
@@ -163,7 +163,7 @@ class TopDataCollatorForFunctionCloneDetection:
             for key, value in encoded_inputs.items():
                 encoded_inputs[key] = to_py_obj(value)
 
-        required_input = encoded_inputs["func1_input_ids"]
+        required_input = encoded_inputs["input_ids"]
         # if required_input and not isinstance(required_input[0], (list, tuple)):
         #     encoded_inputs = self._pad(
         #         encoded_inputs,
@@ -227,11 +227,8 @@ class TopDataCollatorForFunctionCloneDetection:
             return_attention_mask = False
             # return_attention_mask = "attention_mask" in self.model_input_names
 
-        func1_required_input = encoded_inputs["func1_input_ids"]
-        func1_special_tokens_mask = encoded_inputs["func1_special_tokens_mask"]
-
-        func2_required_input = encoded_inputs["func2_input_ids"]
-        func2_special_tokens_mask = encoded_inputs["func2_special_tokens_mask"]
+        input_ids = encoded_inputs["input_ids"]
+        mask_for_bottom = encoded_inputs["mask_for_bottom"]
 
         if (
             max_length is not None
@@ -242,24 +239,22 @@ class TopDataCollatorForFunctionCloneDetection:
 
         needs_to_be_padded = (
             padding_strategy != "DO_NOT_PAD"
-            and any(len(func) < max_length for func in func1_required_input)
+            and any(len(func) < max_length for func in input_ids)
             # and any(len(func) < max_length for func in func2_required_input)
         )
         if needs_to_be_padded:
             (
-                encoded_inputs["func1_input_ids"],
-                encoded_inputs["func1_special_tokens_mask"],
-            ) = self.pad_for_functions(
-                func1_required_input, func1_special_tokens_mask, max_length
-            )
+                encoded_inputs["input_ids"],
+                encoded_inputs["mask_for_bottom"],
+            ) = self.pad_for_functions(input_ids, mask_for_bottom, max_length)
         encoded_inputs["func1_masks"] = [
             [1 if 0 in block else 0 for block in func]
-            for func in encoded_inputs["func1_special_tokens_mask"]
+            for func in encoded_inputs["mask_for_bottom"]
         ]
 
         needs_to_be_padded = (
             padding_strategy != "DO_NOT_PAD"
-            # and any(len(func) < max_length for func in func1_required_input)
+            # and any(len(func) < max_length for func in input_ids)
             and any(len(func) < max_length for func in func2_required_input)
         )
         if needs_to_be_padded:

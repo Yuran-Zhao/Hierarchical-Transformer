@@ -489,6 +489,22 @@ def main():
                 logger.info(f"steps {completed_steps}: perplexity: {perplexity}")
                 model.train()
 
+            if completed_steps % 10000 == 0:
+                if args.output_dir is not None:
+                    accelerator.wait_for_everyone()
+                    unwrapped_model = accelerator.unwrap_model(model)
+                    torch.save(
+                        unwrapped_model.state_dict(),
+                        os.path.join(args.output_dir, "bottom_transformer_state_dict"),
+                    )
+                    print(
+                        "The Bottom Transformer has been save to {}".format(
+                            os.path.join(
+                                args.output_dir, "bottom_transformer_state_dict"
+                            )
+                        )
+                    )
+
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(model)
