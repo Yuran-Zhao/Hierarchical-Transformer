@@ -17,7 +17,7 @@
 # Pre-train the BERT on a dataset without using HuggingFace Trainer.
 # """
 # You can also adapt this script on your own mlm task. Pointers for this are left as comments.
-
+from sklearn.metrics import classification_report
 import argparse
 import logging
 import math
@@ -27,39 +27,36 @@ import random
 
 import datasets
 import numpy as np
-import tokenizers
 import torch
 import transformers
 from accelerate import Accelerator
+from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
-from tokenizers.processors import TemplateProcessing
 from torch.nn import DataParallel
-from torch.utils.data.dataloader import DataLoader
+from torch.utils.data.dataloader import DataLoader,Dataset
 from tqdm.auto import tqdm
 from transformers import (
     CONFIG_MAPPING,
     MODEL_MAPPING,
     AdamW,
-    AutoConfig,
-    AutoModelForMaskedLM,
-    AutoTokenizer,
-    BatchEncoding,
-    BertConfig,
-    BertForMaskedLM,
-    BertModel,
-    DataCollatorForLanguageModeling,
     SchedulerType,
     get_scheduler,
     set_seed,
 )
 
-HIDDEN_SIZE = 96
-MAX_LENGTH = 50  # NOTE  NOT FOR SURE !
+HIDDEN_SIZE = 1280
+# CLASS_NAMES = ["Adware", "Backdoor", "PWS", "Rogue", "Trojan", "TrojanDownloader", "TrojanDropper", "TrojanSpy", "VirTool", "Virus", "Worm"]
+CLASS_NAMES = ["Adware_Win32_GameVance", "Adware_Win32_Rugo", "Backdoor_Win32_Cycbot_B", "Backdoor_Win32_Cycbot_G", "Backdoor_Win32_Hupigon",
+    "Backdoor_Win32_Rbot", "PWS_Win32_Ceekat_gen_A", "PWS_Win32_Lolyda_BF", "PWS_Win32_OnLineGames_CPL", "PWS_Win32_Zbot", "Rogue_Win32_FakeRean",
+    "Rogue_Win32_Winwebsec", "TrojanDownloader_Win32_Renos_LX", "TrojanDownloader_Win32_Renos_MJ", "TrojanDownloader_Win32_Renos_NS",
+    "TrojanDownloader_Win32_Renos_ON", "TrojanDownloader_Win32_Renos_PG", "TrojanDownloader_Win32_Renos_PT", "Trojan_Win32_C2Lop_E",
+    "Trojan_Win32_Delf_KP", "Trojan_Win32_Koutodoor_F", "VirTool_Win32_DelfInject_gen_X", "Worm_Win32_Vobfus", "Worm_Win32_Vobfus_GZ"]
+# MAX_LENGTH = 500  # NOTE  NOT FOR SURE !
 
 from bottom_transformer import BottomTransformer
 from middle_transformer import MiddleTransformer
-from process_data.utils import CURRENT_DATA_BASE_FOR_MIDDLE
-from top_data_collator import TopDataCollator
+from process_data.utils import CURRENT_DATA_BASE_FOR_TOP
+from top_data_collator import TopDataCollator, MyDataset
 from top_transformer import TopTransformer
 
 logger = logging.getLogger(__name__)
@@ -192,168 +189,52 @@ def main():
     if args.seed is not None:
         set_seed(args.seed)
 
-    # we take control of the load of dataset by oursevles
-    # there will be several json file for training
-    # `raw_dataset` has two features:
-    #   `text`: "sentA\tsentB"
-    #   `is_next`: 0 or 1
-    # raw_datasets = load_dataset(
-    #     "json",
-    #     data_files={
-    #         "train": "/home/ming/malware/inst2vec_bert/data/test_lm/inst.json",
-    #         "validation": "/home/ming/malware/inst2vec_bert/data/test_lm/inst.json",
-    #     },
-    #     field="data",
-    # )
-
-    # the format in train_files should be
-    # {"data" =
-    #   [
-    #       {"text": [func1, func2, ..., funcn], "is_malware": 0/1},
-    #       {"text": [func1, func2, ..., funcn], "is_malware": 0/1},
-    #       ...
-    #       {"text": [func1, func2, ..., funcn], "is_malware": 0/1},
-    #   ]
-    # }
-    # each function consists of a number of blocks
-    # each block consists of a number of instructions, which are like [opcode, operand_1, operand_2]
-    train_files = [
-        os.path.join(CURRENT_DATA_BASE_FOR_MIDDLE, "func.{}.json".format(i))
-        for i in range(103)
-    ]
-    valid_file = os.path.join(CURRENT_DATA_BASE_FOR_MIDDLE, "func.103.json")
-    test_file = os.path.join(CURRENT_DATA_BASE_FOR_MIDDLE, "func.104.json")
-
-    raw_datasets = load_dataset(
-        "json",
-        data_files={"train": train_files, "validation": valid_file, "test": test_file},
-        field="data",
-    )
-
-    # train_files = "/home/ming/malware/inst2vec_bert/H-Transformer/data/test.data.json"
-
-    # raw_datasets = load_dataset(
-    #     "json", data_files={"train": train_files}, field="data",
-    # )
-
-    # we use the tokenizer previously trained on the dataset above
-    tokenizer = tokenizers.Tokenizer.from_file(
-        "/home/ming/malware/inst2vec_bert/data/asm_bert/tokenizer-inst.all.json"
-    )
-
-    # NOTE: have to promise the `length` here is consistent with the one used in `train_my_tokenizer.py`
-    tokenizer.enable_padding(
-        pad_id=tokenizer.token_to_id("[PAD]"), pad_token="[PAD]", length=3
-    )
-    tokenizer.post_processor = TemplateProcessing(single="$A",)
-
-    bottom_transformer = BottomTransformer(
-        tokenizer.get_vocab_size(),
-        tokenizer.get_vocab_size(),
-        tokenizer.token_to_id("[PAD]"),
-        d_model=HIDDEN_SIZE,
-        n_head=8,
-        num_layers=6,
-        max_length=251,
-        device="cuda:0",
-    )
-    bottom_transformer.load_state_dict(torch.load("./bottom_transformer_state_dict"))
-    print("The Bottom Transformer model has been loaded successfully !")
-    bottom_transformer.eval()
-
-    middle_transformer = MiddleTransformer(
-        bottom_transformer,
-        d_model=HIDDEN_SIZE,
-        n_head=8,
-        num_layers=6,
-        max_length=MAX_LENGTH,
-        device="cuda:0",
-    )
-    middle_transformer.load_state_dict(torch.load("./middle_transformer_state_dict"))
-    print("The Middle Transformer model has been loaded successfully !")
-    middle_transformer.eval()
+    
+    # train_info_file = "/home/ming/malware/HCNN/dataset_infos/train_infos_sm.txt"
+    train_info_file = "/home/ming/malware/HCNN/dataset_infos/train_infos1.txt"
+    with open(train_info_file, 'r') as f:
+        train_file_info = f.readlines()
+    train_dataset = MyDataset(train_file_info)
+    
+    # test_info_file = "/home/ming/malware/HCNN/dataset_infos/test_infos_sm.txt"
+    test_info_file = "/home/ming/malware/HCNN/dataset_infos/test_infos1.txt"
+    with open(test_info_file, 'r') as f:
+        test_file_info = f.readlines()
+    random.shuffle(test_file_info)
+    test_dataset = MyDataset(test_file_info)
+    
+    eval_dataset = MyDataset(test_file_info[:200])
 
     model = TopTransformer(
-        middle_transformer,
+        # middle_transformer,
         d_model=HIDDEN_SIZE,
         n_head=8,
         num_layers=6,
-        max_length=MAX_LENGTH,
         device="cuda:0",
     )
     model = DataParallel(model)
 
-    loss_function = torch.nn.MSELoss()
-
-    # First we aplly `tokenize_function` on the dataset.
-
-    def tokenize_function(examples):
-        # pdb.set_trace()
-        binaries = examples["text"]
-        labels = examples["is_malware"]
-
-        encoded_inputs = {}
-        results = [
-            [[tokenizer.encode_batch(block) for block in func] for func in binary]
-            for binary in binaries
-        ]
-
-        # NOTE
-        # Assumption: every instruction consists of (opcode, operand_1, operand_2)
-        # so only need first three ids
-        encoded_inputs["input_ids"] = [
-            [[[inst.ids[:3] for inst in block] for block in func] for func in binary]
-            for binary in results
-        ]
-        encoded_inputs["mask_for_bottom"] = [
-            [
-                [[inst.special_tokens_mask[0] for inst in block] for block in func]
-                for func in binary
-            ]
-            for binary in results
-        ]
-
-        encoded_inputs["labels"] = labels
-        batch_outputs = BatchEncoding(
-            encoded_inputs, tensor_type="np", prepend_batch_axis=False,
-        )
-        return batch_outputs
-
-    tokenized_datasets = raw_datasets.map(
-        tokenize_function,
-        batched=True,
-        num_proc=args.preprocessing_num_workers,
-        remove_columns=column_names,
-        load_from_cache_file=True,
-    )
-
-    train_dataset = tokenized_datasets["train"]
-    eval_dataset = tokenized_datasets["validation"]
-    test_dataset = tokenized_datasets["test"]
+    loss_function = torch.nn.NLLLoss()
 
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 3):
         logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
 
-    # Data collator
-    # This one will take care of randomly masking the tokens.
-    data_collator = TopDataCollator(tokenizer=tokenizer, mlm=False,)
 
     # DataLoaders creation:
     train_dataloader = DataLoader(
         train_dataset,
         shuffle=True,
-        collate_fn=data_collator,
         batch_size=args.per_device_train_batch_size,
     )
-    eval_dataloader = DataLoader(
-        eval_dataset,
-        collate_fn=data_collator,
-        batch_size=args.per_device_eval_batch_size,
-    )
+
     test_dataloader = DataLoader(
         test_dataset,
-        collate_fn=data_collator,
+        batch_size=args.per_device_eval_batch_size,
+    )
+
+    eval_dataloader = DataLoader(
+        eval_dataset,
         batch_size=args.per_device_eval_batch_size,
     )
 
@@ -382,8 +263,6 @@ def main():
 
     # Prepare everything with our `accelerator`.
     (
-        bottom_transformer,
-        middle_transformer,
         model,
         optimizer,
         loss_function,
@@ -391,8 +270,6 @@ def main():
         eval_dataloader,
         test_dataloader,
     ) = accelerator.prepare(
-        bottom_transformer,
-        middle_transformer,
         model,
         optimizer,
         loss_function,
@@ -455,22 +332,14 @@ def main():
     for epoch in range(args.num_train_epochs):
         model.train()
         for step, batch in enumerate(train_dataloader):
-            # input_ids `(batch_size, binary_max_size, function_max_size, block_max_size, inst_max_size)`
-            input_ids = batch.pop("input_ids", None)
-            # mask_for_bottom `(batch_size, binary_max_size, function_max_size, block_max_size)`
-            mask_for_bottom = batch.pop("mask_for_bottom", None)
-            # mask_for_middle `(batch_size, binary_max_size, function_max_size)`
-            mask_for_middle = batch.pop("mask_for_middle", None)
-            # masks `(batch_size, binary_max_size)`
-            mask_for_binary = batch.pop("mask_for_binary", None)
+            input_vec = batch.get('vectors', None)
+            # print(input_vec.shape)
 
-            predictions = model(
-                input_ids, mask_for_bottom, mask_for_middle, mask_for_binary
-            )
+            outputs = model(input_vec)
 
-            labels = batch.pop("labels", None)
+            labels = batch.get("labels", None)
 
-            loss = loss_function(similarity, labels)
+            loss = loss_function(outputs, labels)
 
             loss = loss.sum()
             loss = loss / args.gradient_accumulation_steps
@@ -487,74 +356,53 @@ def main():
 
             if completed_steps >= args.max_train_steps:
                 break
-
+                
             if completed_steps % args.eval_every_steps == 0:
                 model.eval()
+                total, correct = 0, 0
                 losses = []
-                correct = 0
-                total = 0
                 for step, batch in enumerate(eval_dataloader):
                     with torch.no_grad():
-                        # input_ids `(batch_size, binary_max_size, function_max_size, block_max_size, inst_max_size)`
-                        input_ids = batch.pop("input_ids", None)
-                        # mask_for_bottom `(batch_size, binary_max_size, function_max_size, block_max_size)`
-                        mask_for_bottom = batch.pop("mask_for_bottom", None)
-                        # mask_for_middle `(batch_size, binary_max_size, function_max_size)`
-                        mask_for_middle = batch.pop("mask_for_middle", None)
-                        # masks `(batch_size, binary_max_size)`
-                        mask_for_binary = batch.pop("mask_for_binary", None)
+                        input_vec = batch.get('vectors', None)
+                        outputs = model(input_vec)
+                        labels = batch.get("labels", None)
+                        loss = loss_function(outputs, labels)
 
-                        predictions = model(
-                            input_ids, mask_for_bottom, mask_for_middle, mask_for_binary
-                        )
-
-                        labels = batch.pop("labels", None)
-
-                        loss = loss_function(similarity, labels)
-
-                        predictions = predictions.ge(0.5) * 1
+                        predictions = torch.argmax(outputs, dim=-1)
 
                     loss = loss.sum()
 
-                    losses.append(
-                        accelerator.gather(loss.repeat(args.per_device_eval_batch_size))
-                    )
+                    losses.append(accelerator.gather(loss.repeat(args.per_device_eval_batch_size)))
+
                     correct += (predictions == labels).sum().item()
                     total += labels.shape[0]
 
                 losses = torch.cat(losses)
                 # losses = losses[: len(eval_dataset)]
-                try:
-                    perplexity = math.exp(torch.mean(losses))
-                except OverflowError:
-                    perplexity = float("inf")
 
                 logger.info(
-                    f"steps {completed_steps}: loss: {torch.mean(losses).item()}, accuracy: {correct / total}"
+                    f"steps {completed_steps}, loss: {torch.mean(losses).item()}, accuracy: {correct / total}"
                 )
                 model.train()
+            
+            # delete caches
+            del input_vec, labels, outputs, loss
+            torch.cuda.empty_cache()
 
     total, correct = 0, 0
+    losses = []
+    total_pred_y = []
+    total_right_y = []
     for step, batch in enumerate(test_dataloader):
         with torch.no_grad():
-            # input_ids `(batch_size, binary_max_size, function_max_size, block_max_size, inst_max_size)`
-            input_ids = batch.pop("input_ids", None)
-            # mask_for_bottom `(batch_size, binary_max_size, function_max_size, block_max_size)`
-            mask_for_bottom = batch.pop("mask_for_bottom", None)
-            # mask_for_middle `(batch_size, binary_max_size, function_max_size)`
-            mask_for_middle = batch.pop("mask_for_middle", None)
-            # masks `(batch_size, binary_max_size)`
-            mask_for_binary = batch.pop("mask_for_binary", None)
+            input_vec = batch.get('vectors', None)
+            outputs = model(input_vec)
+            labels = batch.get("labels", None)
+            loss = loss_function(outputs, labels)
 
-            predictions = model(
-                input_ids, mask_for_bottom, mask_for_middle, mask_for_binary
-            )
-
-            labels = batch.pop("labels", None)
-
-            loss = loss_function(similarity, labels)
-
-            predictions = predictions.ge(0.5) * 1
+            predictions = torch.argmax(outputs, dim=-1)
+            total_pred_y += predictions.tolist()
+            total_right_y += labels.tolist()
 
         loss = loss.sum()
 
@@ -565,13 +413,10 @@ def main():
 
     losses = torch.cat(losses)
     # losses = losses[: len(eval_dataset)]
-    try:
-        perplexity = math.exp(torch.mean(losses))
-    except OverflowError:
-        perplexity = float("inf")
 
     logger.info(
-        f"Final result on test dataset: loss: {torch.mean(losses).item()}, accuracy: {correct / total}"
+        # f"Final result on test dataset: loss: {torch.mean(losses).item()}, accuracy: {correct / total}"
+        classification_report(np.array(total_right_y), np.array(total_pred_y), target_names=list(CLASS_NAMES), digits=4)
     )
 
     if args.output_dir is not None:

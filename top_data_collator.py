@@ -1,5 +1,6 @@
 import pdb
 from dataclasses import dataclass
+from itertools import chain
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -11,6 +12,8 @@ from typing import (
     Tuple,
     Union,
 )
+import pickle
+import os
 
 import numpy as np
 import tokenizers
@@ -18,10 +21,75 @@ import torch
 from transformers import BatchEncoding
 
 from bottom_data_collator import MAX_LENGTH_OF_BLOCK
-
+from torch.utils.data import Dataset
 EncodedInput = List[int]
 MAX_LENGTH_OF_FUNCTION = 50
 
+MAX_LENGTH=500
+D_MODEL=1280
+
+class MyDataset(Dataset):
+    def __init__(self,info_list) -> None:
+        super().__init__()
+        self.binary_list = []
+        self.label_list = []
+        for info in info_list:
+            dirname = info[:-1].split(' ')[0]
+            label = info[:-1].split(' ')[-1]
+            # if len(os.listdir(tmp)) < MAX_LENGTH:
+            self.binary_list.append(dirname)
+            self.label_list.append(int(label))
+        # self.info_list = info_list
+    
+    def __len__(self):
+        return len(self.binary_list)
+    
+    def __getitem__(self, index):
+        if torch.is_tensor(index):
+            index = index.tolist()
+        # pdb.set_trace()
+        if isinstance(index, list):
+            vectors = []
+
+            for idx in index:
+                binary_dir = self.binary_list[idx]
+                # binary_dir = binary_dir.replace('malgraph_bert_avg_256_sm', 'malfuncpkl_bert_avg_256')
+                binary_dir = binary_dir.replace('malopcode1', 'malfuncpkl_bert_avg_256_1')
+                tmp = self.get_one_item(idx).unsqueeze(dim=0)
+                difference = max(0, MAX_LENGTH - len(os.listdir(binary_dir)))
+                zeros = torch.zeros((difference, D_MODEL),dtype=torch.float)
+                vectors.append(torch.cat((tmp, zeros), dim=0))
+            
+            vectors= torch.cat(vectors, dim=0)
+
+            labels = torch.tensor([self.label_list[idx] for idx in index])
+        elif isinstance(index, int):
+            vectors = self.get_one_item(index)
+            binary_dir = self.binary_list[index]
+            # binary_dir = binary_dir.replace('malgraph_bert_avg_256_sm', 'malfuncpkl_bert_avg_256')
+            binary_dir = binary_dir.replace('malopcode1', 'malfuncpkl_bert_avg_256_1')
+            difference = max(0, MAX_LENGTH - len(os.listdir(binary_dir)))
+            if difference > 0:
+                zeros = torch.zeros((difference, D_MODEL),dtype=torch.float)
+                vectors = torch.cat((vectors, zeros), dim=0)
+            labels = torch.tensor(self.label_list[index])
+
+        return {"vectors": vectors, "labels":labels}
+
+    def get_one_item(self, idx):
+        binary_dir = self.binary_list[idx]
+        # binary_dir = binary_dir.replace('malgraph_bert_avg_256_sm', 'malfuncpkl_bert_avg_256')
+        binary_dir = binary_dir.replace('malopcode1', 'malfuncpkl_bert_avg_256_1')
+        function_list = os.listdir(binary_dir)
+        rets = []
+        for _, function in zip(range(MAX_LENGTH), function_list):
+            filename = os.path.join(binary_dir, function)
+            with open(filename, 'rb') as f:
+                vec = pickle.load(f)
+                vec = np.expand_dims(vec, axis=0)
+                rets.append(vec)
+        rets = np.concatenate(rets, axis=0)
+        return torch.from_numpy(rets)
 
 @dataclass
 class TopDataCollator:
@@ -55,8 +123,8 @@ class TopDataCollator:
             )
 
         # If special token mask has been preprocessed, pop it from the dict.
-        # mask_for_bottom = batch.pop("mask_for_bottom", None)
-        # func2_special_tokens_mask = batch.pop("func2_special_tokens_mask", None)
+        # func1_mask_for_bottom = batch.pop("func1_mask_for_bottom", None)
+        # func2_mask_for_bottom = batch.pop("func2_mask_for_bottom", None)
 
         # pdb.set_trace()
         # batch["input_ids"] = torch.squeeze(batch["input_ids"], dim=0)
@@ -221,74 +289,41 @@ class TopDataCollator:
                     >= 7.5 (Volta).
                 return_attention_mask: (optional) Set to False to avoid returning attention mask (default: set to model specifics)
             """
-        # pdb.set_trace()
         # Load from model defaults
         if return_attention_mask is None:
             return_attention_mask = False
             # return_attention_mask = "attention_mask" in self.model_input_names
 
-        input_ids = encoded_inputs["input_ids"]
-        mask_for_bottom = encoded_inputs["mask_for_bottom"]
-
-        if (
-            max_length is not None
-            and pad_to_multiple_of is not None
-            and (max_length % pad_to_multiple_of != 0)
-        ):
-            max_length = ((max_length // pad_to_multiple_of) + 1) * pad_to_multiple_of
-
-        needs_to_be_padded = (
-            padding_strategy != "DO_NOT_PAD"
-            and any(len(func) < max_length for func in input_ids)
-            # and any(len(func) < max_length for func in func2_required_input)
-        )
-        if needs_to_be_padded:
-            (
-                encoded_inputs["input_ids"],
-                encoded_inputs["mask_for_bottom"],
-            ) = self.pad_for_functions(input_ids, mask_for_bottom, max_length)
-        encoded_inputs["func1_masks"] = [
-            [1 if 0 in block else 0 for block in func]
-            for func in encoded_inputs["mask_for_bottom"]
-        ]
-
-        needs_to_be_padded = (
-            padding_strategy != "DO_NOT_PAD"
-            # and any(len(func) < max_length for func in input_ids)
-            and any(len(func) < max_length for func in func2_required_input)
-        )
-        if needs_to_be_padded:
-            (
-                encoded_inputs["func2_input_ids"],
-                encoded_inputs["func2_special_tokens_mask"],
-            ) = self.pad_for_functions(
-                func2_required_input, func2_special_tokens_mask, max_length
+        required_input = encoded_inputs["input_ids"]
+        # func1_mask_for_bottom = encoded_inputs["func1_mask_for_bottom"]
+        binary_max_length = max([len(binary) for binary in required_input])
+        func_max_length = max(chain.from_iterable([[len(func) for func in binary] for binary in required_input]))
+        block_max_length = (
+            max(
+                chain.from_iterable(
+                    [[max([len(block) for block in func]) for func in binary] for binary in required_input]
+                )
             )
-        encoded_inputs["func2_masks"] = [
-            [1 if 0 in block else 0 for block in func]
-            for func in encoded_inputs["func2_special_tokens_mask"]
-        ]
-
-        # elif return_attention_mask and "attention_mask" not in encoded_inputs:
-        #     encoded_inputs["attention_mask"] = [1] * len(required_input)
+            + 1
+        )
+        # pdb.set_trace()
+        for index, binary in enumerate(encoded_inputs["input_ids"]):
+            difference = max(binary_max_length - len(binary), 0)
+            encoded_inputs['input_ids'][index] += [[] for _ in range(difference)]
+            encoded_inputs["input_ids"][index] = self.pad_for_functions(functions_input_ids=encoded_inputs["input_ids"][index], func_max_length=func_max_length, block_max_length=block_max_length)
 
         return encoded_inputs
 
     def pad_for_functions(
         self,
         functions_input_ids,
-        functions_special_tokens_mask,
-        max_length,
-        padding_strategy: str = "LONGEST",
+        func_max_length,
+        block_max_length,
     ):
         for index in range(len(functions_input_ids)):
 
-            difference = max(max_length - len(functions_input_ids[index]), 0)
+            difference = max(func_max_length - len(functions_input_ids[index]), 0)
             # if self.padding_side == "right":
-
-            functions_special_tokens_mask[index] = functions_special_tokens_mask[
-                index
-            ] + [[] for _ in range(difference)]
 
             functions_input_ids[index] = functions_input_ids[index] + [
                 [] for _ in range(difference)
@@ -298,39 +333,32 @@ class TopDataCollator:
             #     input_ids[index][sub_index] = self.pad_blocks_helper(
             #         input_ids[index][sub_index], max_length,
             #     )
-            (
-                functions_input_ids[index],
-                functions_special_tokens_mask[index],
-            ) = self.pad_for_blocks(
-                functions_input_ids[index],
-                functions_special_tokens_mask[index],
-                MAX_LENGTH_OF_BLOCK,
+            # pdb.set_trace()
+            functions_input_ids[index] = self.pad_for_blocks(
+                blocks_input_ids=functions_input_ids[index],
+                block_max_length=block_max_length,
             )
-        # pdb.set_trace()
 
-        return functions_input_ids, functions_special_tokens_mask
+        return functions_input_ids
 
     def pad_for_blocks(
         self,
         blocks_input_ids,
-        blocks_special_tokens_mask,
-        max_length,
-        padding_strategy: str = "LONGEST",
+        block_max_length,
     ):
         # pdb.set_trace()
-        needs_to_be_padded = padding_strategy != "DO_NOT_PAD" and any(
-            len(block) < max_length for block in blocks_input_ids
+        # needs_to_be_padded = padding_strategy != "DO_NOT_PAD" and any(
+        #     len(block) < block_max_length for block in blocks_input_ids
+        # )
+        needs_to_be_padded = any(
+            len(block) < block_max_length for block in blocks_input_ids
         )
         if needs_to_be_padded:
             for index in range(len(blocks_input_ids)):
                 # NOTE: we need to add a '[CLS]' before the `required_input`
                 # so the difference should subtract 1
-                difference = max(max_length - len(blocks_input_ids[index]) - 1, 0)
+                difference = max(block_max_length - len(blocks_input_ids[index]) - 1, 0)
                 # if self.padding_side == "right":
-
-                blocks_special_tokens_mask[index] = (
-                    [1] + blocks_special_tokens_mask[index] + [1] * difference
-                )
 
                 # process each block
                 blocks_input_ids[index] = (
@@ -339,43 +367,7 @@ class TopDataCollator:
                     + [[self.tokenizer.token_to_id("[PAD]") for _ in range(3)]]
                     * difference
                 )
-        return blocks_input_ids, blocks_special_tokens_mask
-
-    # def pad_special_tokens_mask_for_blocks(self, special_tokens_mask, max_length):
-
-
-def _collate_batch(examples, tokenizer, pad_to_multiple_of: Optional[int] = None):
-    """Collate `examples` into a batch, using the information in `tokenizer` for padding if necessary."""
-    # Tensorize if necessary.
-    if isinstance(examples[0], (list, tuple)):
-        examples = [torch.tensor(e, dtype=torch.long) for e in examples]
-
-    # Check if padding is necessary.
-    length_of_first = examples[0].size(0)
-    are_tensors_same_length = all(x.size(0) == length_of_first for x in examples)
-    if are_tensors_same_length and (
-        pad_to_multiple_of is None or length_of_first % pad_to_multiple_of == 0
-    ):
-        return torch.stack(examples, dim=0)
-
-    # If yes, check if we have a `pad_token`.
-    if tokenizer._pad_token is None:
-        raise ValueError(
-            "You are attempting to pad samples but the tokenizer you are using"
-            f" ({tokenizer.__class__.__name__}) does not have a pad token."
-        )
-
-    # Creating the full tensor and filling it with our data.
-    max_length = max(x.size(0) for x in examples)
-    if pad_to_multiple_of is not None and (max_length % pad_to_multiple_of != 0):
-        max_length = ((max_length // pad_to_multiple_of) + 1) * pad_to_multiple_of
-    result = examples[0].new_full([len(examples), max_length], tokenizer.pad_token_id)
-    for i, example in enumerate(examples):
-        if tokenizer.padding_side == "right":
-            result[i, : example.shape[0]] = example
-        else:
-            result[i, -example.shape[0] :] = example
-    return result
+        return blocks_input_ids
 
 
 def to_py_obj(obj):

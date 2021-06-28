@@ -267,19 +267,24 @@ class MiddleDataCollatorForFunctionCloneDetection:
         #     # and any(len(func) < max_length for func in func2_required_input)
         # )
         # if needs_to_be_padded:
-        (
-            encoded_inputs["func1_input_ids"],
-            encoded_inputs["func1_mask_for_bottom"],
-        ) = self.pad_for_functions(
+        # (
+        #     encoded_inputs["func1_input_ids"],
+        #     encoded_inputs["func1_mask_for_bottom"],
+        # ) = self.pad_for_functions(
+        #     func1_required_input,
+        #     func1_mask_for_bottom,
+        #     func_max_length,
+        #     block_max_length,
+        # )
+        encoded_inputs["func1_input_ids"] = self.pad_for_functions(
             func1_required_input,
-            func1_mask_for_bottom,
             func_max_length,
             block_max_length,
         )
-        encoded_inputs["func1_mask_for_function"] = [
-            [1 if 0 in block else 0 for block in func]
-            for func in encoded_inputs["func1_mask_for_bottom"]
-        ]
+        # encoded_inputs["func1_mask_for_function"] = [
+        #     [1 if 0 in block else 0 for block in func]
+        #     for func in encoded_inputs["func1_mask_for_bottom"]
+        # ]
 
         # needs_to_be_padded = (
         #     padding_strategy != "DO_NOT_PAD"
@@ -287,19 +292,11 @@ class MiddleDataCollatorForFunctionCloneDetection:
         #     and any(len(func) < max_length for func in func2_required_input)
         # )
         # if needs_to_be_padded:
-        (
-            encoded_inputs["func2_input_ids"],
-            encoded_inputs["func2_mask_for_bottom"],
-        ) = self.pad_for_functions(
+        encoded_inputs["func2_input_ids"] = self.pad_for_functions(
             func2_required_input,
-            func2_mask_for_bottom,
             func_max_length,
             block_max_length,
         )
-        encoded_inputs["func2_mask_for_function"] = [
-            [1 if 0 in block else 0 for block in func]
-            for func in encoded_inputs["func2_mask_for_bottom"]
-        ]
 
         # elif return_attention_mask and "attention_mask" not in encoded_inputs:
         #     encoded_inputs["attention_mask"] = [1] * len(required_input)

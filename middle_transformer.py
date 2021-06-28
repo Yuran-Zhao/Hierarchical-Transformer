@@ -39,15 +39,15 @@ class MiddleTransformer(nn.Module):
         """
         (batch_size, function_max_size, block_max_size, inst_size,) = input_ids.shape
 
-        input_ids.to(self.device)
-        mask_for_bottom.to(self.device)
-        mask_for_function.to(self.device)
+        # input_ids.to(self.device)
+        # mask_for_bottom.to(self.device)
+        # mask_for_function.to(self.device)
         input_ids = torch.reshape(
             input_ids, (-1, block_max_size, inst_size)
         ).contiguous()
-        mask_for_bottom = torch.reshape(
-            mask_for_bottom, (-1, block_max_size)
-        ).contiguous()
+        # mask_for_bottom = torch.reshape(
+        #     mask_for_bottom, (-1, block_max_size)
+        # ).contiguous()
 
         # bottom_output `(batch_size * function_max_size, d_model)`
         # pdb.set_trace()
@@ -58,9 +58,9 @@ class MiddleTransformer(nn.Module):
 
         inserted = torch.clone(self.inserted_vector)
         inserted = inserted.expand(batch_size, 1, -1)
-        ones = torch.ones(batch_size).unsqueeze(dim=1).to(mask_for_function.device)
+        # ones = torch.ones(batch_size).unsqueeze(dim=1).to(mask_for_function.device)
 
-        mask_for_function = torch.cat((ones, mask_for_function), dim=1)
+        # mask_for_function = torch.cat((ones, mask_for_function), dim=1)
         batch = torch.cat((inserted, bottom_output), dim=1)
         batch = batch.permute(1, 0, 2).contiguous()
         tmp = self.transformer(batch, None)  # src_key_padding_mask=mask_for_function.bool())

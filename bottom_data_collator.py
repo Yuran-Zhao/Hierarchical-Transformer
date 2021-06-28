@@ -295,7 +295,7 @@ class BottomDataCollatorForMaskedAssemblyModel:
         if return_attention_mask is None:
             return_attention_mask = False
             # return_attention_mask = "attention_mask" in self.model_input_names
-
+        max_length = max([len(block) for block in encoded_inputs["input_ids"]]) + 1
         required_input = encoded_inputs["input_ids"]
 
         if (

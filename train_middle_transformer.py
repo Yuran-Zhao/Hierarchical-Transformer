@@ -592,8 +592,12 @@ def main():
                 )
                 model.train()
 
-    total, correct = 0, 0
+
     for step, batch in enumerate(test_dataloader):
+        model.eval()
+        losses = []
+        correct = 0
+        total = 0
         with torch.no_grad():
             # input_ids `(batch_size, function_max_size, block_max_size, 3)`
             func1_input_ids = batch.pop("func1_input_ids", None)

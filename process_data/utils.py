@@ -15,6 +15,12 @@ ORIGINAL_DATA_BASE_FOR_MIDDLE = "/home/ming/malware/prog_32bit/coreutils-asm"
 CURRENT_DATA_BASE_FOR_MIDDLE = (
     "/home/ming/malware/inst2vec_bert/H-Transformer/data/middle"
 )
+ORIGINAL_DATA_BASE_FOR_TOP = (
+    "/home/ming/malware/inst2vec_bert/H-Transformer/data/top"
+)
+CURRENT_DATA_BASE_FOR_TOP = (
+    "/home/ming/malware/inst2vec_bert/H-Transformer/data/top"
+)
 
 
 def read_file(filename):
